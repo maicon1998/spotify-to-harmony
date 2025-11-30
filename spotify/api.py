@@ -13,27 +13,39 @@ spotify_secret = os.getenv("SPOTIFY_SECRET")
 spotify_token_cache = "spotify_token_cache.json"
 
 
-def get_token():
-    """https://developer.spotify.com/documentation/web-api/tutorials/client-credentials-flow"""
+def get_token() -> str | None:
+    """
+    Get Spotify access token using Client Credentials flow.
 
+    Returns:
+        str | None: Access token if successful, None if authentication failed
+
+    Reference:
+        https://developer.spotify.com/documentation/web-api/tutorials/client-credentials-flow
+    """
+
+    # Check for valid cached token first to avoid unnecessary API calls
     if os.path.exists(spotify_token_cache):
         try:
             with open(spotify_token_cache, "r") as f:
                 cache_data = json.load(f)
 
+            # Check if token hasn't expired yet (with safety buffer)
             expires_at = cache_data.get("expires_at")
             if expires_at and time.time() < expires_at - 300:
                 print("♻️ Using cached Spotify token\n")
                 return cache_data["access_token"]
 
         except (json.JSONDecodeError, KeyError) as e:
-            print("⚠️ Cache corrupted, getting new token\n")
+            print(f"⚠️ Cache corruted or key missing: {e}, getting new token\n")
 
+    # Encode credentials for Spotify Client Credentials Flow
     print("🔄 Getting new Spotify token...\n")
-    auth_string = spotify_id + ":" + spotify_secret
+    auth_string = f"{spotify_id}:{spotify_secret}"
     auth_bytes = auth_string.encode("utf-8")
     auth_base64 = str(base64.b64encode(auth_bytes), "utf-8")
 
+    # Request config for OAuth 2.0
     url = "https://accounts.spotify.com/api/token"
     headers = {
         "Authorization": "Basic " + auth_base64,
@@ -41,12 +53,13 @@ def get_token():
     }
     data = {"grant_type": "client_credentials"}
 
+    # Token request
     try:
         response = post(url, headers=headers, data=data)
-        response.raise_for_status()
+        response.raise_for_status()  # Raises exception for 4xx/5xx status codes
         json_response = response.json()
 
-        # Cache the token to prevent unnecessary API calls and avoid hitting rate limits
+        # Cache the token to reduce API calls and avoid hitting rate limits
         cache_data = {
             "access_token": json_response["access_token"],
             "expires_at": time.time() + json_response["expires_in"],
@@ -65,28 +78,55 @@ def get_token():
         return None
 
 
-def get_auth_header(token):
+def get_auth_header(token: str) -> dict[str, str]:
+    """Create Authorization header for Spotify API requests.
+
+    Returns:
+        Dictionary with Authorization header
+    """
+
     return {"Authorization": "Bearer " + token}
 
 
-def get_all_playlist_tracks(token, playlist_id):
-    """https://developer.spotify.com/documentation/web-api/reference/get-playlists-tracks"""
+def get_all_playlist_tracks(token: str, playlist_id: str) -> list:
+    """
+    Retrieve all tracks from a Spotify playlist with pagination.
+
+    Args:
+        token: Spotify access token
+        playlist_id: ID of the Spotify playlist to fetch
+
+    Returns:
+        List of track dictionaries with song name, artist and search query
+
+    Reference:
+        https://developer.spotify.com/documentation/web-api/reference/get-playlists-tracks
+    """
+
     all_tracks = []
-    limit = 50
+    limit = 50  # Spotify's maximum items per page
     offset = 0
 
+    # Paginate through all tracks until complete
     while True:
         try:
+            # API endpoint with pagination parameters
             url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
             query = f"?limit={limit}&offset={offset}"
             headers = get_auth_header(token)
 
             response = get(url + query, headers=headers)
+            response.raise_for_status()  # Raises exception for 4xx/5xx status codes
             json_response = response.json()
 
-            if "items" not in json_response or not json_response["items"]:
-                print("❌ Unexpected response from Spotify\n")
+            # Validate response structure
+            if "items" not in json_response:
+                print("❌ Unexpected API response format from Spotify\n")
                 break
+
+            if not json_response["items"]:
+                print("✅ Reached end of playlist\n")
+                break  # No more tracks to process
 
             # Process tracks in current page
             batch_tracks = []
@@ -103,10 +143,13 @@ def get_all_playlist_tracks(token, playlist_id):
                         }
                     )
 
+            # Add this batch to our complete list
             all_tracks.extend(batch_tracks)
-            print(f"Retrieved {len(batch_tracks)} tracks... Total: {len(all_tracks)}\n")
+            print(
+                f"📥 Retrieved {len(batch_tracks)} tracks... Total: {len(all_tracks)}"
+            )
 
-            # Break the loop when it reaches the last page
+            # Exit loop when it reaches the last page
             if len(batch_tracks) < limit:
                 break
 
